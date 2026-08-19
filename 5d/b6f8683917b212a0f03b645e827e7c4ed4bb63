@@ -1,0 +1,23 @@
+scheduler/tests/test_worker/test_working_time.py
+  s_fe9e5c860fd791::t_b855acc0027cc7 1-68
+scheduler/worker/worker.py
+  s_fe9e5c860fd791::t_efc3834199eefa 293,741
+scheduler/templates/admin/scheduler/workers-list.partial.html
+  s_fe9e5c860fd791::t_19582625060aa9 57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "5db6f8683917b212a0f03b645e827e7c4ed4bb63",
+  "prompts": {},
+  "sessions": {
+    "s_fe9e5c860fd791": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "996b2e17-0855-4be8-bb75-d110195ddc91",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Mark McArdle <mark.mcardle@sohonet.com>"
+    }
+  }
+}
