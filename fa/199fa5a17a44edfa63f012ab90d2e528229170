@@ -1,0 +1,47 @@
+.github/workflows/test-cron-ownership.yml
+  s_66b0b646de484f::t_920fbe757ce795 1-48
+CLAUDE.md
+  s_66b0b646de484f::t_aedb9e377bd509 80-98
+docs/commands.md
+  s_66b0b646de484f::t_f95d9304efa977 161-205
+scheduler/helpers/queues/queue_logic.py
+  s_66b0b646de484f::t_df81bfd8be5c88 25,396
+scheduler/management/commands/reconcile_scheduler.py
+  s_66b0b646de484f::t_504c2342bf7773 1-39
+scheduler/models/cron.py
+  s_66b0b646de484f::t_c7eb73a7d26952 1-181
+scheduler/models/task.py
+  s_66b0b646de484f::t_fd9cb9243cb626 12,22,26,29,33-61,65,69,196-211,244,269-275,278-290,362-367,370-388,391-395,398-402,405-408,499-501,511-524
+scheduler/redis_models/job.py
+  s_66b0b646de484f::t_f4a2f1ab1d0128 20-21
+scheduler/tests/conf.py
+  s_66b0b646de484f::t_7cb1772e3bebaa 99-100
+scheduler/tests/test_task_types/test_cron_concurrency.py
+  s_66b0b646de484f::t_5aae6327a0d430 1-73
+scheduler/tests/test_task_types/test_cron_ownership.py
+  s_66b0b646de484f::t_ccc8ca18d59b17 1-431
+scheduler/types/broker_types.py
+  s_66b0b646de484f::t_c070f30f164698 17
+scheduler/worker/scheduler.py
+  s_66b0b646de484f::t_25fef60e0d1598 11,16-17,29-38
+testproject/testproject/postgres_settings.py
+  s_66b0b646de484f::t_b1d1c1b8b87bd1 1-17
+testproject/testproject/settings.py
+  s_66b0b646de484f::t_cd4456714c34d8 151-156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "fa199fa5a17a44edfa63f012ab90d2e528229170",
+  "prompts": {},
+  "sessions": {
+    "s_66b0b646de484f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07cc9-9a8c-7cb3-b517-b088a87601c6",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Mark McArdle <mark.mcardle@sohonet.com>"
+    }
+  }
+}
