@@ -1,0 +1,21 @@
+scheduler/tests/test_task_types/test_cron_ownership.py
+  s_66b0b646de484f::t_9c8b1f440a1423 508-544
+scheduler/models/task.py
+  s_66b0b646de484f::t_4bf126dea60c8f 271,282
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d388e105a77c5a5a4029ec04dbcafa1c3065e427",
+  "prompts": {},
+  "sessions": {
+    "s_66b0b646de484f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07cc9-9a8c-7cb3-b517-b088a87601c6",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Mark McArdle <mark.mcardle@sohonet.com>"
+    }
+  }
+}
