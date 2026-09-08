@@ -451,3 +451,57 @@ class TestCronDatabaseIsolation(SchedulerBaseCase):
             self.assertNotEqual(task.job_name, owner)
             self.assertEqual(queue.scheduled_job_registry.all(queue.connection), [task.job_name])
             self.assertFalse(Task.objects.using("default").exists())
+
+    def test_non_cron_creation_preserves_explicit_database_with_write_router(self):
+        for task_type in (TaskType.ONCE, TaskType.REPEATABLE):
+            with self.subTest(task_type=task_type), self.settings(DATABASE_ROUTERS=[DefaultWriteRouter()]):
+                task = task_factory(task_type, instance_only=True)
+                task.save(using="other")
+                task.refresh_from_db(using="other")
+                job = JobModel.get(task.job_name, connection=task.rqueue.connection)
+                self.assertEqual(job.meta["scheduler_task_database"], "other")
+                self.assertFalse(Task.objects.using("default").exists())
+
+    def test_non_cron_completion_preserves_database_with_write_router(self):
+        for task_type in (TaskType.ONCE, TaskType.REPEATABLE):
+            with self.subTest(task_type=task_type):
+                first = task_factory(task_type)
+                second = task_factory(task_type, instance_only=True, id=first.pk)
+                second.save(using="other")
+                original = Task.objects.using("default").values().get(pk=first.pk)
+                queue = second.rqueue
+                job = JobModel.get(second.job_name, connection=queue.connection)
+                queue.scheduled_job_registry.delete(queue.connection, job.name)
+                with (
+                    self.settings(DATABASE_ROUTERS=[DefaultWriteRouter()]),
+                    patch("django.utils.timezone.now", return_value=second.scheduled_time + timedelta(seconds=1)),
+                ):
+                    queue.run_sync(job)
+                self.assertEqual(Task.objects.using("default").values().get(pk=first.pk), original)
+                second.refresh_from_db(using="other")
+                self.assertEqual(second.successful_runs, 1)
+                self.assertEqual(second.failed_runs, 0)
+                if task_type == TaskType.ONCE:
+                    self.assertIsNone(second.job_name)
+                else:
+                    self.assertNotEqual(second.job_name, job.name)
+                    successor = JobModel.get(second.job_name, connection=queue.connection)
+                    self.assertEqual(successor.meta["scheduler_task_database"], "other")
+                    self.assertIn(second.job_name, queue.scheduled_job_registry.all(queue.connection))
+
+    def test_same_id_and_timestamp_preserve_both_database_jobs(self):
+        with patch("django.utils.timezone.now", return_value=timezone.now()):
+            first = task_factory(TaskType.CRON)
+            second = task_factory(TaskType.CRON, instance_only=True, id=first.pk)
+            second.save(using="other")
+        queue = first.rqueue
+        self.assertCountEqual(queue.scheduled_job_registry.all(queue.connection), [first.job_name, second.job_name])
+        for task, alias in ((first, "default"), (second, "other")):
+            job = JobModel.get(task.job_name, connection=queue.connection)
+            self.assertEqual(job.meta["scheduler_task_database"], alias)
+            queue.scheduled_job_registry.delete(queue.connection, job.name)
+            queue.run_sync(job)
+            task.refresh_from_db(using=alias)
+            self.assertEqual(task.successful_runs, 1)
+            self.assertNotEqual(task.job_name, job.name)
+        self.assertCountEqual(queue.scheduled_job_registry.all(queue.connection), [first.job_name, second.job_name])

@@ -52,7 +52,7 @@ def _complete_task(job: JobModel, *, failed: bool) -> None:
                 cron.reconcile(task, exclude=job.name)
         elif job.task_type != str(TaskType.CRON):
             task.job_name = None
-            task.save(schedule_job=True, clean=False)
+            task.save(using=using, schedule_job=True, clean=False)
     if failed and involves_cron:
         try:
             mail_admins(f"Task {task.pk}/{task.name} has failed", "See django-admin for logs")
@@ -230,6 +230,8 @@ class Task(models.Model):
 
     def _next_job_id(self) -> str:
         addition = timezone.now().strftime("%Y%m%d%H%M%S%f")
+        if self._state.db and self._state.db != "default":
+            addition = f"{self._state.db}:{addition}"
         return f"{self.queue}:{self.id}:{addition}"
 
     def _enqueue_args(self) -> dict[str, Any]:
@@ -399,7 +401,7 @@ class Task(models.Model):
                 cron.reconcile(self)
             else:
                 self._schedule()
-                super().save(update_fields=["job_name", "scheduled_time", "repeat", "updated_at"])
+                super().save(using=self._state.db, update_fields=["job_name", "scheduled_time", "repeat", "updated_at"])
 
     def delete(self, **kwargs: Any) -> None:
         using = kwargs.get("using") or router.db_for_write(Task, instance=self)
