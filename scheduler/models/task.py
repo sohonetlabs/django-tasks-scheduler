@@ -9,7 +9,7 @@ from django.contrib import admin
 from django.contrib.contenttypes.fields import GenericRelation
 from django.core.exceptions import ValidationError
 from django.core.mail import mail_admins
-from django.db import models
+from django.db import models, router, transaction
 from django.templatetags.tz import utc
 from django.urls import reverse
 from django.utils import timezone
@@ -19,45 +19,54 @@ from django.utils.translation import gettext_lazy as _
 from scheduler import settings
 from scheduler.helpers.callback import Callback
 from scheduler.helpers.queues import Queue, get_queue
+from scheduler.helpers.queues.queue_logic import get_current_job
 from scheduler.redis_models import JobModel
 from scheduler.settings import get_queue_names, logger
 from scheduler.types import TASK_TYPES, ConnectionType
+from scheduler.types.broker_types import BrokerErrorTypes
 
 from ..helpers import utils
+from . import cron
 from .args import TaskArg, TaskKwarg
 
 
-def _get_task_for_job(job: JobModel) -> Optional["Task"]:
-    if job.task_type is None or job.scheduled_task_id is None:
-        return None
-    task: Task = Task.objects.filter(id=job.scheduled_task_id).first()
-    return task
+def _complete_task(job: JobModel, *, failed: bool) -> None:
+    if job.scheduled_task_id is None or job.meta.get(cron._SKIPPED):
+        return
+    using = job.meta.get("scheduler_task_database", "default")
+    with transaction.atomic(using=using):
+        task = Task.objects.using(using).select_for_update().filter(pk=job.scheduled_task_id).first()
+        if task is None or not cron.same_generation(task, job):
+            return
+        involves_cron = task.task_type == TaskType.CRON or job.task_type == str(TaskType.CRON)
+        if failed and not involves_cron:
+            mail_admins(f"Task {task.pk}/{task.name} has failed", "See django-admin for logs")
+        counter = "failed_runs" if failed else "successful_runs"
+        last_run = "last_failed_run" if failed else "last_successful_run"
+        setattr(task, counter, getattr(task, counter) + 1)
+        setattr(task, last_run, timezone.now())
+        models.Model.save(task, using=using, update_fields=[counter, last_run, "updated_at"])
+        if task.task_type == TaskType.CRON:
+            if not job.meta.get(cron._MANUAL) and task.job_name == job.name:
+                task.job_name = None
+                cron.reconcile(task, exclude=job.name)
+        elif job.task_type != str(TaskType.CRON):
+            task.job_name = None
+            task.save(schedule_job=True, clean=False)
+    if failed and involves_cron:
+        try:
+            mail_admins(f"Task {task.pk}/{task.name} has failed", "See django-admin for logs")
+        except Exception:
+            # Reporting failure must not retry already committed completion bookkeeping.
+            logger.exception("Could not report failed task %s", task.name)
 
 
 def failure_callback(job: JobModel, connection: ConnectionType, result: Any, *args: Any, **kwargs: Any) -> None:
-    task = _get_task_for_job(job)
-    if task is None:
-        logger.warn(f"Could not find task for job {job.name}")
-        return
-    mail_admins(
-        f"Task {task.id}/{task.name} has failed",
-        "See django-admin for logs",
-    )
-    task.job_name = None
-    task.failed_runs += 1
-    task.last_failed_run = timezone.now()
-    task.save(schedule_job=True, clean=False)
+    _complete_task(job, failed=True)
 
 
 def success_callback(job: JobModel, connection: ConnectionType, result: Any, *args: Any, **kwargs: Any) -> None:
-    task = _get_task_for_job(job)
-    if task is None:
-        logger.warn(f"Could not find task for job {job.name}")
-        return
-    task.job_name = None
-    task.successful_runs += 1
-    task.last_successful_run = timezone.now()
-    task.save(schedule_job=True, clean=False)
+    _complete_task(job, failed=False)
 
 
 def get_queue_choices() -> list[tuple[str, str]]:
@@ -184,22 +193,22 @@ class Task(models.Model):
     @admin.display(boolean=True, description=_("is scheduled?"))  # type: ignore[misc]
     def is_scheduled(self) -> bool:
         """Check whether a next job for this task is queued/scheduled to be executed"""
-        if self.job_name is None:  # no job_id => is not scheduled
-            return False
-        # check whether job_id is in scheduled/queued/active jobs
-        with self.rqueue.connection.pipeline() as pipeline:
-            self.rqueue.scheduled_job_registry.exists(pipeline, self.job_name)
-            self.rqueue.queued_job_registry.exists(pipeline, self.job_name)
-            self.rqueue.active_job_registry.exists(pipeline, self.job_name)
-            results = pipeline.execute()
-            res = any(item is not None for item in results)
-
-        # If the job_name is not scheduled/queued/started,
-        # update the job_id to None. (The job_id belongs to a previous run which is completed)
-        if not res:
-            self.job_name = None
-            super().save()
-        return res
+        try:
+            if self.task_type == TaskType.CRON:
+                return bool(self.pk and cron.read_schedule(self, self.rqueue).jobs)
+            if self.job_name is None:
+                return False
+            job = JobModel.get(self.job_name, connection=self.rqueue.connection)
+            if job is None:
+                return False
+            with self.rqueue.connection.pipeline() as pipeline:
+                self.rqueue.scheduled_job_registry.exists(pipeline, self.job_name)
+                self.rqueue.queued_job_registry.exists(pipeline, self.job_name)
+                self.rqueue.active_job_registry.exists(pipeline, self.job_name)
+                return any(item is not None for item in pipeline.execute())
+        except BrokerErrorTypes:
+            logger.exception("Could not inspect task %s; assuming it is scheduled", self.name)
+            return True
 
     @admin.display(description="Callable")  # type: ignore[misc]
     def function_string(self) -> str:
@@ -232,7 +241,7 @@ class Task(models.Model):
         - set job meta
         """
         res = {
-            "meta": {},
+            "meta": {"scheduler_task_database": self._state.db or "default"},
             "task_type": self.task_type,
             "scheduled_task_id": self.id,
             "on_success": Callback(success_callback),
@@ -257,19 +266,28 @@ class Task(models.Model):
 
     def enqueue_to_run(self) -> bool:
         """Enqueue task to run now as a different instance from the scheduled task."""
-        kwargs = self._enqueue_args()
-        self.rqueue.create_and_enqueue_job(run_task, args=(self.task_type, self.id), when=None, **kwargs)
+        using = router.db_for_write(Task, instance=self)
+        with transaction.atomic(using=using):
+            current = Task.objects.using(using).select_for_update().get(pk=self.pk)
+            kwargs = current._enqueue_args()
+            if current.task_type == TaskType.CRON:
+                kwargs["meta"][cron._MANUAL] = "1"
+            current.rqueue.create_and_enqueue_job(run_task, args=(current.task_type, current.pk), when=None, **kwargs)
         return True
 
-    def unschedule(self) -> bool:
-        """Remove a job from django-queue.
-
-        If a job is queued to be executed or scheduled to be executed, it will remove it.
-        """
-        if self.job_name is not None:
-            self.rqueue.delete_job(self.job_name)
-            self.job_name = None
-        self.save(schedule_job=False, clean=False)
+    def unschedule(self, *, using: str | None = None) -> bool:
+        """Remove waiting executions without deleting a running job or manual cron run."""
+        using = using or router.db_for_write(Task, instance=self)
+        with transaction.atomic(using=using):
+            current = Task.objects.using(using).select_for_update().get(pk=self.pk)
+            if current.task_type == TaskType.CRON:
+                cron.retire_schedule(current)
+            elif current.job_name is not None:
+                current.rqueue.delete_job(current.job_name)
+            current.job_name = None
+            current.enabled = self.enabled
+            models.Model.save(current, using=using, update_fields=["enabled", "job_name", "updated_at"])
+            cron._copy_runtime(current, self)
         return True
 
     def _schedule_time(self) -> datetime:
@@ -341,20 +359,53 @@ class Task(models.Model):
         return True
 
     def save(self, **kwargs: Any) -> None:
+        using = kwargs.get("using") or router.db_for_write(Task, instance=self)
+        with transaction.atomic(using=using):
+            current = Task.objects.using(using).select_for_update().filter(pk=self.pk).first() if self.pk else None
+            self._save_locked(current, **kwargs)
+
+    def _save_locked(self, current: Optional["Task"], **kwargs: Any) -> None:
         should_clean = kwargs.pop("clean", True)
         schedule_job = kwargs.pop("schedule_job", True)
+        if kwargs.get("update_fields") is not None:
+            fields = set(kwargs["update_fields"])
+            if not fields:
+                return
+            kwargs["update_fields"] = fields | {"updated_at"}
+            if current is not None:
+                for field in self._meta.concrete_fields:
+                    if field.name not in fields and field.attname not in fields:
+                        setattr(self, field.attname, getattr(current, field.attname))
+        involves_cron = self.task_type == TaskType.CRON or (current is not None and current.task_type == TaskType.CRON)
+        identity_changed = current is not None and (current.queue, current.task_type) != (self.queue, self.task_type)
+        if involves_cron:
+            if current is not None:
+                requested_time = self.scheduled_time
+                cron._copy_runtime(current, self)
+                if identity_changed:
+                    self.scheduled_time = requested_time
+            elif not self._state.adding:
+                raise Task.DoesNotExist("Cannot save a task that was deleted")
         if should_clean:
             self.clean()
-        if update_fields := kwargs.get("update_fields"):
-            kwargs["update_fields"] = set(update_fields).union({"updated_at"})
+        if involves_cron and identity_changed and current is not None:
+            cron.retire_schedule(current)
+            self.job_name = None
+            if kwargs.get("update_fields"):
+                kwargs["update_fields"] |= {"job_name"}
         super().save(**kwargs)
         if schedule_job:
-            self._schedule()
-            super().save()
+            if self.task_type == TaskType.CRON:
+                cron.reconcile(self)
+            else:
+                self._schedule()
+                super().save(update_fields=["job_name", "scheduled_time", "repeat", "updated_at"])
 
     def delete(self, **kwargs: Any) -> None:
-        self.unschedule()
-        super().delete(**kwargs)
+        using = kwargs.get("using") or router.db_for_write(Task, instance=self)
+        with transaction.atomic(using=using):
+            self.unschedule(using=using)
+            super().delete(**kwargs)
 
     def interval_seconds(self) -> float:
         kwargs = {
@@ -445,7 +496,9 @@ def get_scheduled_task(task_type_str: str, task_id: int) -> Task:
         task_type = TaskType(task_type_str)
     except ValueError:
         raise ValueError(f"Invalid task type {task_type_str}")
-    task = Task.objects.filter(task_type=task_type, id=task_id).first()
+    job = get_current_job()
+    using = job.meta.get("scheduler_task_database", "default") if job else "default"
+    task = Task.objects.using(using).filter(task_type=task_type, id=task_id).first()
     if task is None:
         raise ValueError(f"Job {task_type}:{task_id} does not exist")
     return task  # type: ignore[no-any-return]
@@ -455,6 +508,20 @@ def run_task(task_model: str, task_id: int) -> Any:
     """Run a scheduled job"""
     if isinstance(task_id, str):
         task_id = int(task_id)
+    job = get_current_job()
+    if job is not None and job.task_type == str(TaskType.CRON):
+        using = job.meta.get("scheduler_task_database", "default")
+        with transaction.atomic(using=using):
+            task = Task.objects.using(using).select_for_update().filter(pk=job.scheduled_task_id).first()
+            allowed = False
+            if task is not None and cron.same_generation(task, job):
+                if job.meta.get(cron._MANUAL):
+                    allowed = task.task_type == job.task_type
+                elif task.task_type == TaskType.CRON and task.queue == job.queue_name:
+                    allowed = cron.reconcile(task, create=False) and task.enabled and task.job_name == job.name
+            if not allowed:
+                job.meta[cron._SKIPPED] = "1"
+                return {"skipped": "obsolete recurring job"}
     scheduled_task = get_scheduled_task(task_model, task_id)
     logger.debug(f"Running task {scheduled_task!s}")
     args = scheduled_task.parse_args()

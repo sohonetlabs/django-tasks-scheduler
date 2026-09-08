@@ -8,11 +8,13 @@ from logging import DEBUG, INFO
 from threading import Thread
 
 import django
+from django.db import router, transaction
 
 from scheduler.helpers.queues import Queue, get_queue
 from scheduler.helpers.queues.getters import get_queue_connection
 from scheduler.helpers.utils import current_timestamp, utcnow
-from scheduler.models import Task
+from scheduler.models import Task, TaskType
+from scheduler.models.cron import reconcile
 from scheduler.redis_models import JobModel, ScheduledJobRegistry, SchedulerLock
 from scheduler.settings import SCHEDULER_CONFIG, logger
 
@@ -24,10 +26,16 @@ class SchedulerStatus(str, Enum):
 
 
 def _reschedule_tasks() -> None:
-    enabled_tasks = list(Task.objects.filter(enabled=True))
-    for task in enabled_tasks:
-        logger.debug(f"Rescheduling {task!s}")
-        task.save(schedule_job=True, clean=False)
+    using = router.db_for_write(Task)
+    ids = list(Task.objects.using(using).filter(enabled=True).order_by("pk").values_list("pk", flat=True))
+    for task_id in ids:
+        with transaction.atomic(using=using):
+            task = Task.objects.using(using).select_for_update().filter(pk=task_id, enabled=True).first()
+            if task is not None:
+                if task.task_type == TaskType.CRON:
+                    reconcile(task)
+                else:
+                    task.save(schedule_job=True, clean=False)
 
 
 class WorkerScheduler:
