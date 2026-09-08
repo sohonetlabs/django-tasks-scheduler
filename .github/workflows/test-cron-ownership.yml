@@ -46,3 +46,4 @@ jobs:
           --settings=testproject.postgres_settings
           scheduler.tests.test_task_types.test_cron_ownership
           scheduler.tests.test_task_types.test_cron_concurrency
+          scheduler.tests.test_task_types.test_cron_scheduler_race
