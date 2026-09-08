@@ -1,0 +1,28 @@
+scheduler/tests/test_task_types/test_cron_scheduler_race.py
+  s_66b0b646de484f::t_8f25f64f1bc34d 7,11,21
+  s_66b0b646de484f::t_3098029621ff60 1-2,5-6,8-10,12-20,22-24,31-110
+  s_66b0b646de484f::t_75cda3e0952f97 3-4,25-30
+.github/workflows/test-cron-ownership.yml
+  s_66b0b646de484f::t_3098029621ff60 49
+docs/testing.md
+  s_66b0b646de484f::t_8f25f64f1bc34d 1-59,65-70,72-81
+  s_66b0b646de484f::t_75cda3e0952f97 60-64,71
+mkdocs.yml
+  s_66b0b646de484f::t_8f25f64f1bc34d 109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "280f4619388ea2491301367126dcd10ad64c0498",
+  "prompts": {},
+  "sessions": {
+    "s_66b0b646de484f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07cc9-9a8c-7cb3-b517-b088a87601c6",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Mark McArdle <mark.mcardle@sohonet.com>"
+    }
+  }
+}
