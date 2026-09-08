@@ -505,3 +505,40 @@ class TestCronDatabaseIsolation(SchedulerBaseCase):
             self.assertEqual(task.successful_runs, 1)
             self.assertNotEqual(task.job_name, job.name)
         self.assertCountEqual(queue.scheduled_job_registry.all(queue.connection), [first.job_name, second.job_name])
+
+    def test_manual_enqueue_preserves_selected_database_with_write_router(self):
+        first = task_factory(TaskType.CRON)
+        second = task_factory(TaskType.CRON, instance_only=True, id=first.pk)
+        second.save(using="other")
+        owners = [first.job_name, second.job_name]
+        queue = second.rqueue
+        with self.settings(DATABASE_ROUTERS=[DefaultWriteRouter()]):
+            second.enqueue_to_run()
+            [name] = queue.queued_job_registry.all(queue.connection)
+            job = JobModel.get(name, connection=queue.connection)
+            self.assertEqual(job.meta["scheduler_task_database"], "other")
+            self.assertTrue(job.meta["scheduler_manual_run"])
+            queue.queued_job_registry.delete(queue.connection, name)
+            queue.run_sync(job)
+        first.refresh_from_db()
+        second.refresh_from_db(using="other")
+        self.assertEqual(first.successful_runs, 0)
+        self.assertEqual(second.successful_runs, 1)
+        self.assertEqual([first.job_name, second.job_name], owners)
+        self.assertCountEqual(queue.scheduled_job_registry.all(queue.connection), owners)
+
+    def test_unschedule_preserves_selected_database_with_write_router(self):
+        first = task_factory(TaskType.CRON)
+        second = task_factory(TaskType.CRON, instance_only=True, id=first.pk)
+        second.save(using="other")
+        owner = first.job_name
+        second.enabled = False
+        with self.settings(DATABASE_ROUTERS=[DefaultWriteRouter()]):
+            second.unschedule()
+        first.refresh_from_db()
+        second.refresh_from_db(using="other")
+        self.assertTrue(first.enabled)
+        self.assertEqual(first.job_name, owner)
+        self.assertFalse(second.enabled)
+        self.assertIsNone(second.job_name)
+        self.assertEqual(first.rqueue.scheduled_job_registry.all(first.rqueue.connection), [owner])

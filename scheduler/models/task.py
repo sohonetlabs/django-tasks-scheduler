@@ -268,7 +268,7 @@ class Task(models.Model):
 
     def enqueue_to_run(self) -> bool:
         """Enqueue task to run now as a different instance from the scheduled task."""
-        using = router.db_for_write(Task, instance=self)
+        using = self._state.db or router.db_for_write(Task, instance=self)
         with transaction.atomic(using=using):
             current = Task.objects.using(using).select_for_update().get(pk=self.pk)
             kwargs = current._enqueue_args()
@@ -279,7 +279,7 @@ class Task(models.Model):
 
     def unschedule(self, *, using: str | None = None) -> bool:
         """Remove waiting executions without deleting a running job or manual cron run."""
-        using = using or router.db_for_write(Task, instance=self)
+        using = using or self._state.db or router.db_for_write(Task, instance=self)
         with transaction.atomic(using=using):
             current = Task.objects.using(using).select_for_update().get(pk=self.pk)
             if current.task_type == TaskType.CRON:
