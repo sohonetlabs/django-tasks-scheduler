@@ -405,6 +405,11 @@ class TestCronOwnership(SchedulerBaseCase):
                 self.assertIsNone(self.queue.connection.get(key))
 
 
+class DefaultWriteRouter:
+    def db_for_write(self, model, **hints):
+        return "default"
+
+
 class TestCronDatabaseIsolation(SchedulerBaseCase):
     databases = {"default", "other"}
 
@@ -429,3 +434,20 @@ class TestCronDatabaseIsolation(SchedulerBaseCase):
         self.assertEqual(second.successful_runs, 1)
         second.delete(using="other")
         self.assertEqual(queue.scheduled_job_registry.all(queue.connection), [first.job_name])
+
+    def test_explicit_database_is_preserved_when_router_prefers_default(self):
+        with self.settings(DATABASE_ROUTERS=[DefaultWriteRouter()]):
+            task = task_factory(TaskType.CRON, instance_only=True, id=20000)
+            task.save(using="other")
+            task.refresh_from_db(using="other")
+            owner = task.job_name
+            queue = task.rqueue
+            job = JobModel.get(owner, connection=queue.connection)
+            queue.scheduled_job_registry.delete(queue.connection, owner)
+            queue.run_sync(job)
+            task.refresh_from_db(using="other")
+            self.assertEqual(task.successful_runs, 1)
+            self.assertEqual(task.failed_runs, 0)
+            self.assertNotEqual(task.job_name, owner)
+            self.assertEqual(queue.scheduled_job_registry.all(queue.connection), [task.job_name])
+            self.assertFalse(Task.objects.using("default").exists())

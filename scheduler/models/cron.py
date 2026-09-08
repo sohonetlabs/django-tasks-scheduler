@@ -166,7 +166,7 @@ def reconcile(task: Task, *, exclude: str | None = None, create: bool = True) ->
         if exclude:
             queue.connection.delete(f"{MISSING_REGISTRY_KEY_PREFIX}{exclude}")
         task.job_name = chosen
-        models.Model.save(task, update_fields=_SCHEDULE_FIELDS)
+        models.Model.save(task, using=task._state.db, update_fields=_SCHEDULE_FIELDS)
         return True
     except BrokerErrorTypes:
         # An ambiguous Redis write may already have created a job. The next tick must adopt it.
