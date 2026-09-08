@@ -180,6 +180,13 @@ is a no-op and does not provide these concurrency guarantees. Database and broke
 updates are separate transactions: a later tick repairs an enqueue whose result
 was lost. This is not a guarantee that business side effects run exactly once.
 
+The automatic sweep queries only the database selected by
+`router.db_for_write(Task)`, normally `default`. Jobs and callbacks retain their
+task's database alias, but the sweep does not visit additional aliases. A cron
+on another alias can therefore lose its recurring chain after a callback broker
+failure. Repair it with `reconcile_scheduler --database other --apply`; automatic
+recovery across all configured databases is not provided by this version.
+
 A queued/started record briefly outside all registries remains the owner during
 worker handoff. If it stays missing, recovery waits its timeout plus 60 seconds
 from the first observation, then replaces it on the next tick. A broker read
