@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.3.0+sohonet.1
+
+- Release the Sohonet fork based on 4.3.0 with recurring-job ownership and completion fixes from
+  [PR #1](https://github.com/sohonetlabs/django-tasks-scheduler/pull/1).
+
 ## v4.3.0 🌈
 
 ### 🐛 Bug Fixes
