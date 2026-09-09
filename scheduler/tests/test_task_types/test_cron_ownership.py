@@ -152,13 +152,38 @@ class TestCronOwnership(SchedulerBaseCase):
     def test_disabling_stale_task_removes_copies_and_preserves_new_configuration(self):
         self.duplicate()
         Task.objects.filter(pk=self.task.pk).update(cron_string="*/5 * * * *")
-        self.task.enabled = False
-        self.task.unschedule()
+        self.task.unschedule(enabled=False)
         self.task.refresh_from_db()
         self.assertFalse(self.task.enabled)
         self.assertEqual(self.task.cron_string, "*/5 * * * *")
         self.assertIsNone(self.task.job_name)
         self.assertEqual(self.scheduled(), [])
+
+    def test_unschedule_keeps_the_stored_enabled_flag(self):
+        """Dequeuing must not let a stale instance rewrite ``enabled`` as a side effect."""
+        self.task.enabled = False
+        self.task.unschedule()
+        self.task.refresh_from_db()
+        self.assertTrue(self.task.enabled)
+        self.assertIsNone(self.task.job_name)
+        self.assertEqual(self.scheduled(), [])
+
+    def test_admin_display_does_not_scan_the_registries(self):
+        """The changelist column runs per row, so it checks ``job_name`` rather than reading
+        every registry the way reconciliation does."""
+        from scheduler.models import cron
+
+        with patch.object(cron, "read_schedule", side_effect=AssertionError("registry sweep")):
+            self.assertTrue(self.task.is_scheduled())
+            self.queue.delete_job(self.task.job_name)
+            self.assertFalse(self.task.is_scheduled())
+
+    def test_unreadable_broker_reports_an_unknown_schedule(self):
+        """A broker outage must not show as a scheduled checkmark in the admin."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        with patch.object(type(self.queue.connection), "pipeline", side_effect=RedisConnectionError("offline")):
+            self.assertIsNone(self.task.is_scheduled())
 
     def test_deleted_task_cannot_be_resurrected_by_stale_save(self):
         Task.objects.get(pk=self.task.pk).delete()
@@ -231,8 +256,7 @@ class TestCronOwnership(SchedulerBaseCase):
 
     def test_completion_after_disable_does_not_reenable(self):
         job = self.job(self.task.job_name)
-        self.task.enabled = False
-        self.task.unschedule()
+        self.task.unschedule(enabled=False)
         success_callback(job, self.queue.connection, None)
         self.task.refresh_from_db()
         self.assertFalse(self.task.enabled)
@@ -278,6 +302,16 @@ class TestCronOwnership(SchedulerBaseCase):
             self.execute(owner)
         self.assertEqual(effects, [])
         self.assertEqual(Task.objects.get(pk=self.task.pk).job_name, owner.name)
+
+    def test_save_reports_that_an_unreachable_broker_left_the_schedule_stale(self):
+        """A cron save that could not reach the broker must not report success silently."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        with patch.object(type(self.queue.connection), "zscan_iter", side_effect=RedisConnectionError("offline")):
+            self.task.save(clean=False)
+        self.assertFalse(self.task.schedule_updated)
+        self.task.save(clean=False)
+        self.assertTrue(self.task.schedule_updated)
 
     def test_ambiguous_enqueue_is_adopted_on_next_tick(self):
         from redis.exceptions import ConnectionError as RedisConnectionError
@@ -532,9 +566,8 @@ class TestCronDatabaseIsolation(SchedulerBaseCase):
         second = task_factory(TaskType.CRON, instance_only=True, id=first.pk)
         second.save(using="other")
         owner = first.job_name
-        second.enabled = False
         with self.settings(DATABASE_ROUTERS=[DefaultWriteRouter()]):
-            second.unschedule()
+            second.unschedule(enabled=False)
         first.refresh_from_db()
         second.refresh_from_db(using="other")
         self.assertTrue(first.enabled)

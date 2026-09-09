@@ -81,6 +81,11 @@ class TaskType(models.TextChoices):
 
 
 class Task(models.Model):
+    #: False when the last save reached the database but could not reach the broker to update
+    #: the schedule. The row is correct, the schedule is stale until the next scheduler sweep
+    #: repairs it. Not a database field - it only describes the save that just ran.
+    schedule_updated: bool = True
+
     class TimeUnits(models.TextChoices):
         SECONDS = "seconds", _("seconds")
         MINUTES = "minutes", _("minutes")
@@ -191,24 +196,28 @@ class Task(models.Model):
         return utils.callable_func(self.callable)
 
     @admin.display(boolean=True, description=_("is scheduled?"))  # type: ignore[misc]
-    def is_scheduled(self) -> bool:
-        """Check whether a next job for this task is queued/scheduled to be executed"""
+    def is_scheduled(self) -> bool | None:
+        """Check whether the job this task owns is queued/scheduled to be executed.
+
+        This is a membership check on ``job_name`` for every task type: one pipelined read,
+        cheap enough to run once per row in the admin changelist. Reconciliation needs the
+        full registry sweep in ``cron.read_schedule`` instead, which is far more expensive.
+
+        Returns None when the broker cannot be read, which the admin shows as an unknown
+        state rather than a checkmark. Callers deciding whether to enqueue must treat None
+        as "possibly already scheduled", never as False.
+        """
+        if self.job_name is None:
+            return False
         try:
-            if self.task_type == TaskType.CRON:
-                return bool(self.pk and cron.read_schedule(self, self.rqueue).jobs)
-            if self.job_name is None:
-                return False
-            job = JobModel.get(self.job_name, connection=self.rqueue.connection)
-            if job is None:
-                return False
             with self.rqueue.connection.pipeline() as pipeline:
                 self.rqueue.scheduled_job_registry.exists(pipeline, self.job_name)
                 self.rqueue.queued_job_registry.exists(pipeline, self.job_name)
                 self.rqueue.active_job_registry.exists(pipeline, self.job_name)
                 return any(item is not None for item in pipeline.execute())
         except BrokerErrorTypes:
-            logger.exception("Could not inspect task %s; assuming it is scheduled", self.name)
-            return True
+            logger.exception("Could not inspect task %s", self.name)
+            return None
 
     @admin.display(description="Callable")  # type: ignore[misc]
     def function_string(self) -> str:
@@ -277,8 +286,13 @@ class Task(models.Model):
             current.rqueue.create_and_enqueue_job(run_task, args=(current.task_type, current.pk), when=None, **kwargs)
         return True
 
-    def unschedule(self, *, using: str | None = None) -> bool:
-        """Remove waiting executions without deleting a running job or manual cron run."""
+    def unschedule(self, *, using: str | None = None, enabled: bool | None = None) -> bool:
+        """Remove waiting executions without deleting a running job or manual cron run.
+
+        Only the schedule is written. Pass ``enabled`` to change that flag on the locked row
+        as well; leaving it unset keeps the stored value, so a caller holding a stale
+        instance cannot rewrite the flag as a side effect of dequeuing.
+        """
         using = using or self._state.db or router.db_for_write(Task, instance=self)
         with transaction.atomic(using=using):
             current = Task.objects.using(using).select_for_update().get(pk=self.pk)
@@ -287,9 +301,14 @@ class Task(models.Model):
             elif current.job_name is not None:
                 current.rqueue.delete_job(current.job_name)
             current.job_name = None
-            current.enabled = self.enabled
-            models.Model.save(current, using=using, update_fields=["enabled", "job_name", "updated_at"])
+            update_fields = ["job_name", "updated_at"]
+            if enabled is not None:
+                current.enabled = enabled
+                update_fields.append("enabled")
+            models.Model.save(current, using=using, update_fields=update_fields)
             cron._copy_runtime(current, self)
+            if enabled is not None:
+                self.enabled = enabled
         return True
 
     def _schedule_time(self) -> datetime:
@@ -345,7 +364,11 @@ class Task(models.Model):
         """Schedule the next execution for the task to run.
         :returns: True if a job was scheduled, False otherwise.
         """
-        if self.is_scheduled():
+        scheduled = self.is_scheduled()
+        if scheduled is None:
+            logger.warning(f"Could not read the schedule for task {self.name}; not enqueuing another job")
+            return False
+        if scheduled:
             logger.debug(f"Task {self.name} already scheduled")
             return False
         if not self.enabled:
@@ -398,7 +421,7 @@ class Task(models.Model):
         super().save(**kwargs)
         if schedule_job:
             if self.task_type == TaskType.CRON:
-                cron.reconcile(self)
+                self.schedule_updated = cron.reconcile(self)
             else:
                 self._schedule()
                 super().save(using=self._state.db, update_fields=["job_name", "scheduled_time", "repeat", "updated_at"])
