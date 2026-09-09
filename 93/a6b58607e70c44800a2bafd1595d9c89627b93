@@ -1,0 +1,19 @@
+docs/changelog.md
+  s_10df26915670f8::t_a165086fb7aa13 21-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "93a6b58607e70c44800a2bafd1595d9c89627b93",
+  "prompts": {},
+  "sessions": {
+    "s_10df26915670f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8b0aa341-930c-4c75-8be0-bca636cdca19",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Mark McArdle <mark.mcardle@sohonet.com>"
+    }
+  }
+}
