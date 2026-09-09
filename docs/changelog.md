@@ -18,6 +18,14 @@
   query #393
 - Kill a job execution process that hangs past its timeout #395
 - Stop a manual **Enqueue now**, or a save from a stale `Task` instance, starting a duplicate recurring chain #412
+- Stop a scheduler sweep landing in the dequeue handoff window, where the job is briefly in no registry, from
+  starting a second recurring chain #412
+- Retire the old job when a task's queue or type changes, instead of leaving it to run and reschedule itself #412
+- Stop a save from a stale `Task` instance bringing a deleted task back #412
+- Lock the task row for every schedule transition, so two workers cannot both give a task a job #412
+- Keep schedules separate per database alias, so the same task id in two databases keeps both its jobs #412
+- Report an unknown schedule in the admin, rather than a checkmark, when the broker cannot be read; a cron save that
+  could not reach the broker now says so instead of reporting success
 
 ### 🧰 Maintenance
 
