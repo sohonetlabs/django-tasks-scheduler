@@ -1,0 +1,24 @@
+docs/changelog.md
+  s_66b0b646de484f::t_a66f5245a32472 3-7
+pyproject.toml
+  s_66b0b646de484f::t_a66f5245a32472 7
+  s_66b0b646de484f::t_9daf34345f12e1 3,21-22,48-50,68,71-72,76,87-89,100
+uv.lock
+  s_66b0b646de484f::t_15d2faebabe7fe 520
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "05c2c65e589ac681655e5b284a730eda908bdc19",
+  "prompts": {},
+  "sessions": {
+    "s_66b0b646de484f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07cc9-9a8c-7cb3-b517-b088a87601c6",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Mark McArdle <mark.mcardle@sohonet.com>"
+    }
+  }
+}
