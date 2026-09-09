@@ -24,8 +24,10 @@
 - Stop a save from a stale `Task` instance bringing a deleted task back #412
 - Lock the task row for every schedule transition, so two workers cannot both give a task a job #412
 - Keep schedules separate per database alias, so the same task id in two databases keeps both its jobs #412
-- Report an unknown schedule in the admin, rather than a checkmark, when the broker cannot be read; a cron save that
+- Report an unknown schedule in the admin, rather than a checkmark, when the broker cannot be read; a task save that
   could not reach the broker now says so instead of reporting success
+- Preserve completed-run counters when scheduling a successor fails because the broker is unavailable
+- Send failure notifications after completion bookkeeping for every task type; mail errors do not undo the run outcome
 
 ### 🧰 Maintenance
 

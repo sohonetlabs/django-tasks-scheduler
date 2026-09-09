@@ -50,9 +50,6 @@ def _complete_task(job: JobModel, *, failed: bool) -> None:
         task = Task.objects.using(using).select_for_update().filter(pk=job.scheduled_task_id).first()
         if task is None or not cron.same_generation(task, job):
             return
-        involves_cron = task.task_type == TaskType.CRON or job.task_type == str(TaskType.CRON)
-        if failed and not involves_cron:
-            mail_admins(f"Task {task.pk}/{task.name} has failed", "See django-admin for logs")
         now = timezone.now()
         if failed:
             counters: dict[str, Any] = {"failed_runs": F("failed_runs") + 1, "last_failed_run": now}
@@ -72,10 +69,10 @@ def _complete_task(job: JobModel, *, failed: bool) -> None:
         elif job.task_type != str(TaskType.CRON):
             # The finishing job is still in the active registry, so discount it rather than clearing the
             # pointer: a failed reschedule must not leave the task looking unscheduled to a racing sweep.
-            if not task._schedule(exclude_job_name=job.name) and task.job_name == job.name:
+            if not task._schedule(exclude_job_name=job.name) and task.schedule_updated and task.job_name == job.name:
                 task.job_name = None
             models.Model.save(task, using=using, update_fields=(*_SCHEDULING_FIELDS, "updated_at"))
-    if failed and involves_cron:
+    if failed:
         try:
             mail_admins(f"Task {task.pk}/{task.name} has failed", "See django-admin for logs")
         except Exception:
@@ -390,11 +387,13 @@ class Task(models.Model):
             this the task would look like it is already scheduled and never get a successor.
         :returns: True if a job was scheduled, False otherwise.
         """
+        self.schedule_updated = True
         if self.job_name == exclude_job_name:
             scheduled = False
         else:
             scheduled = self.is_scheduled()
         if scheduled is None:
+            self.schedule_updated = False
             logger.warning(f"Could not read the schedule for task {self.name}; not enqueuing another job")
             return False
         if scheduled:
@@ -408,7 +407,15 @@ class Task(models.Model):
             logger.debug(f"Task {self!s} scheduled time is in the past, not scheduling")
             return False
         kwargs = self._enqueue_args()
-        job = self.rqueue.create_and_enqueue_job(run_task, args=(self.task_type, self.id), when=schedule_time, **kwargs)
+        try:
+            job = self.rqueue.create_and_enqueue_job(
+                run_task, args=(self.task_type, self.id), when=schedule_time, **kwargs
+            )
+        except BrokerErrorTypes:
+            # A successor's broker failure must not roll back the completed run's counters.
+            self.schedule_updated = False
+            logger.exception("Could not schedule task %s; leaving its job reference unchanged", self.name)
+            return False
         self.job_name = job.name
         return True
 
