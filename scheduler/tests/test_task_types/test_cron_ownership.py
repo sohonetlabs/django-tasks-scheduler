@@ -333,20 +333,23 @@ class TestCronOwnership(SchedulerBaseCase):
         self.assertEqual(self.scheduled(), [owner])
 
     def test_scheduler_rechecks_enabled_after_enumerating_tasks(self):
+        """A task disabled while the sweep is running is skipped, not rescheduled from a stale id."""
         from scheduler.worker import scheduler
 
         other = task_factory(TaskType.CRON)
-        original = scheduler.reconcile
+        owner = other.job_name
+        original = Task.reschedule_if_needed
 
-        def reconcile(task, **kwargs):
+        def reschedule_if_needed(task):
             if task.pk == self.task.pk:
                 Task.objects.filter(pk=other.pk).update(enabled=False)
-            return original(task, **kwargs)
+            return original(task)
 
-        with patch.object(scheduler, "reconcile", reconcile):
+        with patch.object(Task, "reschedule_if_needed", reschedule_if_needed):
             scheduler._reschedule_tasks()
         other.refresh_from_db()
         self.assertFalse(other.enabled)
+        self.assertEqual(other.job_name, owner)
 
     def test_manual_payload_cannot_run_after_deletion_or_type_change(self):
         manual = self.manual_job()
