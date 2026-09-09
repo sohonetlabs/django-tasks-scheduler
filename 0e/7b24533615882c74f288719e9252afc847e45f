@@ -1,0 +1,30 @@
+scheduler/models/task.py
+  s_66b0b646de484f::t_7c332e72eb2f8a 72,75,390,396,410-417
+  s_66b0b646de484f::t_83f45a60cf2aeb 418
+scheduler/tests/test_worker/test_db_connections.py
+  s_66b0b646de484f::t_d6bb1d43cca6a3 20,141,145-146
+.github/workflows/test-cron-ownership.yml
+  s_66b0b646de484f::t_0cd5ffd3b40099 47
+docs/changelog.md
+  s_66b0b646de484f::t_e431c6016f1876 27,29-30
+scheduler/tests/test_task_types/test_completion_errors.py
+  s_66b0b646de484f::t_f374bb6a5eaccf 107-119
+  s_66b0b646de484f::t_88c51723f8bf65 32,76-78,85-87
+  s_66b0b646de484f::t_78f5a7e5906ae7 1-31,33-75,79-84,88-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "0e7b24533615882c74f288719e9252afc847e45f",
+  "prompts": {},
+  "sessions": {
+    "s_66b0b646de484f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07cc9-9a8c-7cb3-b517-b088a87601c6",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Mark McArdle <mark.mcardle@sohonet.com>"
+    }
+  }
+}
