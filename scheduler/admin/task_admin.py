@@ -3,8 +3,9 @@ from typing import Any
 
 from django import forms
 from django.contrib import admin, messages
+from django.contrib.admin.views.main import ChangeList
 from django.contrib.contenttypes.admin import GenericStackedInline
-from django.db.models import QuerySet
+from django.db.models import QuerySet, prefetch_related_objects
 from django.http import HttpRequest, HttpResponse
 from django.utils import formats, timezone
 from django.utils.html import format_html, format_html_join
@@ -175,16 +176,27 @@ class TaskAdmin(admin.ModelAdmin):
                 return ""
             return f"Repeatable: {o.interval} {o.get_interval_unit_display()}"
 
+    def get_changelist_instance(self, request: HttpRequest) -> ChangeList:
+        # Only the rendered page needs the arguments and the broker state, so the actions' querysets stay plain.
+        changelist = super().get_changelist_instance(request)
+        tasks = list(changelist.result_list)
+        prefetch_related_objects(tasks, "callable_args", "callable_kwargs")
+        states = Task.scheduled_states(tasks)
+        for task in tasks:
+            task._is_scheduled = states[task.pk]
+        return changelist
+
+    @admin.display(boolean=True, description=_("is scheduled?"))
+    def is_scheduled(self, o: Task) -> bool | None:
+        # The changelist checks its whole page at once; any other caller checks the one task.
+        return o._is_scheduled if hasattr(o, "_is_scheduled") else o.is_scheduled()
+
     @admin.display(description="Next run")
     def next_run(self, o: Task) -> str | datetime:
+        # Display only: rendering the list must not write. The scheduler keeps `scheduled_time` current.
         res = o.scheduled_time
         if res is None:
             return _("Not scheduled")
-        if res < timezone.now():
-            o.save(clean=False)
-            res = o.scheduled_time
-            if res is None:
-                return _("Not scheduled")
         if is_naive(res):
             res = timezone.make_aware(res, timezone.get_current_timezone())
         return res
