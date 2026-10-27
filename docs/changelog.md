@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.3.0+sohonet.2
+
+- Make the task admin changelist check every task's scheduled state with one broker read per queue, instead of one
+  new broker connection per task, prefetch the callable arguments of the page, and stop `next_run` saving tasks
+  while the page renders. Ports the changelist part of upstream `ee95981`, `29d3e3b` and `b57ad59`.
+
 ## 4.3.0+sohonet.1
 
 - Release the Sohonet fork based on 4.3.0 with recurring-job ownership and completion fixes from

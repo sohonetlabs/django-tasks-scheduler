@@ -1,5 +1,6 @@
 import math
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -218,25 +219,48 @@ class Task(models.Model):
     def is_scheduled(self) -> bool | None:
         """Check whether the job this task owns is queued/scheduled to be executed.
 
-        This is a membership check on ``job_name`` for every task type: one pipelined read,
-        cheap enough to run once per row in the admin changelist. Reconciliation needs the
-        full registry sweep in ``cron.read_schedule`` instead, which is far more expensive.
+        This is a membership check on ``job_name`` for every task type: one pipelined read.
+        For many tasks at once, use ``scheduled_states``, which reads each queue once.
+        Reconciliation needs the full registry sweep in ``cron.read_schedule`` instead, which
+        is far more expensive.
 
         Returns None when the broker cannot be read, which the admin shows as an unknown
         state rather than a checkmark. Callers deciding whether to enqueue must treat None
         as "possibly already scheduled", never as False.
         """
-        if self.job_name is None:
-            return False
-        try:
-            with self.rqueue.connection.pipeline() as pipeline:
-                self.rqueue.scheduled_job_registry.exists(pipeline, self.job_name)
-                self.rqueue.queued_job_registry.exists(pipeline, self.job_name)
-                self.rqueue.active_job_registry.exists(pipeline, self.job_name)
-                return any(item is not None for item in pipeline.execute())
-        except BrokerErrorTypes:
-            logger.exception("Could not inspect task %s", self.name)
-            return None
+        return Task.scheduled_states([self])[self.pk]
+
+    @staticmethod
+    def scheduled_states(tasks: Iterable["Task"]) -> dict[Any, bool | None]:
+        """``is_scheduled`` for each task, keyed by pk, with one pipelined read per queue.
+
+        Each ``rqueue`` opens its own broker connection, so checking task by task costs a
+        connection per task. Here the tasks of one queue share one.
+        """
+        states: dict[Any, bool | None] = {}
+        by_queue: dict[str, list[Task]] = defaultdict(list)
+        for task in tasks:
+            if task.job_name is None:
+                states[task.pk] = False
+            else:
+                by_queue[task.queue].append(task)
+        for queue_name, queue_tasks in by_queue.items():
+            try:
+                queue = queue_tasks[0].rqueue
+                registries = (queue.scheduled_job_registry, queue.queued_job_registry, queue.active_job_registry)
+                with queue.connection.pipeline() as pipeline:
+                    for task in queue_tasks:
+                        for registry in registries:
+                            registry.exists(pipeline, task.job_name)
+                    found = pipeline.execute()
+            except BrokerErrorTypes:
+                logger.exception("Could not inspect the tasks on queue %s", queue_name)
+                states.update((task.pk, None) for task in queue_tasks)
+                continue
+            for index, task in enumerate(queue_tasks):
+                rows = found[index * len(registries) : (index + 1) * len(registries)]
+                states[task.pk] = any(item is not None for item in rows)
+        return states
 
     @admin.display(description="Callable")  # type: ignore[misc]
     def function_string(self) -> str:
